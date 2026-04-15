@@ -439,3 +439,16 @@ if st.button("🔍 Submit for Code Review", use_container_width=True):
                 "Defective" if lr_prob > 0.5 else "Clean"
             ]
         }), hide_index=True, use_container_width=True)
+
+import os
+from flask import Flask
+app = Flask(__name__)
+
+@app.route('/')
+def hello():
+    return 'Hello, World! Cloud Run worked!'
+
+if __name__ == '__main__':
+    # Cloud Run needs to grab the port dynamically and listen on 0.0.0.0
+    port = int(os.environ.get('PORT', 8080))
+    app.run(host='0.0.0.0', port=port, debug=True)
