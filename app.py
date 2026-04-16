@@ -18,7 +18,7 @@ st.set_page_config(
 @st.cache_resource
 def load_artifacts():
     rf_model       = joblib.load("model.pkl")
-    lr_model       = joblib.load("lr_model(1).pkl")
+    lr_model       = joblib.load("lr_model.pkl")
     gb_model       = joblib.load("gb_model.pkl")
     ensemble_model = joblib.load("ensemble_model.pkl")
     scaler         = joblib.load("scaler.pkl")
