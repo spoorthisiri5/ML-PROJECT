@@ -1,289 +1,377 @@
-# ============================================================
-#  🍝 Spaghetti Code Detector — app.py
-#  Angry Senior Dev AI powered by NASA JM1 defect dataset
-# ============================================================
-
+# app.py — Spaghetti Code Detector v3
 import streamlit as st
 import numpy as np
 import pandas as pd
 import joblib
 import matplotlib.pyplot as plt
-import matplotlib.patches as mpatches
+import math
+import random
+import shap
 
-# ── Page config (must be first Streamlit call) ────────────────────────────
 st.set_page_config(
     page_title="Spaghetti Code Detector",
     page_icon="🍝",
-    layout="centered",
+    layout="centered"
 )
 
-# ── Load model artifacts ──────────────────────────────────────────────────
+# ── Load all artifacts ─────────────────────────────────────
 @st.cache_resource
 def load_artifacts():
-    """Load and cache all model files so they're only read once."""
-    model         = joblib.load("model.pkl")       # RandomForest
-    lr_model      = joblib.load("lr_model.pkl")    # LogisticRegression
-    scaler        = joblib.load("scaler.pkl")
-    feature_names = joblib.load("feature_names.pkl")
-    return model, lr_model, scaler, feature_names
+    rf_model       = joblib.load("model.pkl")
+    lr_model       = joblib.load("lr_model.pkl")
+    gb_model       = joblib.load("gb_model.pkl")
+    ensemble_model = joblib.load("ensemble_model.pkl")
+    scaler         = joblib.load("scaler.pkl")
+    features       = joblib.load("feature_names.pkl")
+    medians        = joblib.load("feature_medians.pkl")
+    return rf_model, lr_model, gb_model, ensemble_model, scaler, features, medians
 
-try:
-    rf_model, lr_model, scaler, FEATURE_NAMES = load_artifacts()
-    models_loaded = True
-except FileNotFoundError as e:
-    models_loaded = False
-    missing_file = str(e)
+rf_model, lr_model, gb_model, ensemble_model, \
+    scaler, FEATURES, MEDIANS = load_artifacts()
 
-# ── Angry Senior Dev response bank ────────────────────────────────────────
+# ── SHAP explainer (cached — slow to build) ────────────────
+@st.cache_resource
+def get_shap_explainer(_model):
+    # TreeExplainer works for RF and GB
+    # use a small background sample for speed
+    return shap.TreeExplainer(_model)
+
+# ── Halstead calculator ────────────────────────────────────
+def calculate_halstead(n1, n2, N1, N2):
+    n = n1 + n2
+    N = N1 + N2
+    if n == 0 or n1 == 0 or n2 == 0:
+        return 0, 0, 0, 0
+    V = N * math.log2(n)
+    D = (n1 / 2) * (N2 / n2)
+    L = 1 / D if D != 0 else 0
+    b = V / 3000
+    return round(N), round(V, 2), round(L, 4), round(b, 4)
+
+# ── Build full input using MEDIANS for hidden features ──────
+# This is the key fix for Problem 1
+def build_input(slider_vals):
+    """
+    Fill all 21 features with dataset medians,
+    then override with whatever the user set via sliders.
+    This prevents hidden features dragging prediction to Clean.
+    """
+    full = {f: MEDIANS.get(f, 0) for f in FEATURES}
+    full.update(slider_vals)  # override with user values
+    return np.array([[full[f] for f in FEATURES]])
+
+# ── Responses ──────────────────────────────────────────────
 RESPONSES = {
     False: {
-        "headline": "✅  LGTM. Approved.",
-        "messages": [
-            "I'm genuinely surprised. Don't touch it again. Ship it.",
-            "Not bad. I mean, it's still your code, but not bad.",
-            "Looks clean. I had my coffee so I'm being generous today.",
-            "Fine. Merge it. But write a test next time.",
-            "My blood pressure is fine for once. Approved.",
-        ],
-        "color": "success",
+        "status": "✅ APPROVED — No Defects Predicted",
+        "lines": [
+            "LGTM. Ship it before I change my mind.",
+            "This is... acceptable. Don't tell anyone I said that.",
+            "Fine. It works. Go home.",
+        ]
     },
     True: {
-        "headline": "❌  REJECTED. Do Not Merge.",
-        "messages": [
-            "Dear god. Did you write this with your elbows? Do NOT push to main.",
-            "This is pure spaghetti. I can smell the bugs through the screen.",
-            "I've seen better code written by interns on their first day. Rewrite it.",
-            "What is this? A function? A crime scene? Hard to tell.",
-            "NO. Step away from the keyboard. Slowly.",
-        ],
-        "color": "error",
-    },
+        "status": "❌ REJECTED — High Defect Probability",
+        "lines": [
+            "Did you write this with your elbows? Do NOT push to main.",
+            "I've seen spaghetti with more structure. Rewrite all of it.",
+            "This will crash in production. I guarantee it.",
+        ]
+    }
 }
 
-# ── Meter helper ──────────────────────────────────────────────────────────
-def spaghetti_meter(probability: float):
-    """Render a colour-coded progress bar styled as a spaghetti-o-meter."""
-    pct = int(probability * 100)
-    color = (
-        "#4CAF50" if pct < 30
-        else "#FF9800" if pct < 60
-        else "#f44336"
-    )
-    label = (
-        "Clean pasta 🌿" if pct < 30
-        else "Getting tangled 🍜" if pct < 60
-        else "Full spaghetti 🍝"
-    )
-    st.markdown(
-        f"""
-        <div style="margin: 8px 0 4px; font-size: 13px; color: #888;">
-            Spaghetti-o-meter
-        </div>
-        <div style="
-            background: #e0e0e0;
-            border-radius: 999px;
-            height: 18px;
-            overflow: hidden;
-            margin-bottom: 4px;
-        ">
-            <div style="
-                width: {pct}%;
-                height: 100%;
-                background: {color};
-                border-radius: 999px;
-                transition: width 0.5s ease;
-            "></div>
-        </div>
-        <div style="font-size: 12px; color: #888; margin-bottom: 16px;">
-            {pct}% defect probability — {label}
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+# ── Fix engine ─────────────────────────────────────────────
+def generate_fixes(loc, vg, evg, ivg, N, V, L, b):
+    fixes = []
+    if loc > 500:
+        fixes.append({
+            "metric": "Lines of Code", "value": f"{loc} lines", "severity": "high",
+            "problem": "Module is too large. No single function should exceed 300 lines.",
+            "fix": [
+                "Split into smaller modules — one responsibility per file.",
+                "Extract repeated logic into helper functions.",
+                f"Target: break into at least {loc // 150} separate functions."
+            ]
+        })
+    if vg > 50:
+        fixes.append({
+            "metric": "Cyclomatic Complexity v(g)", "value": f"{vg} paths", "severity": "high",
+            "problem": f"v(g)={vg} means {vg} independent paths. You need {vg} test cases to cover all branches — nobody writes that many.",
+            "fix": [
+                "Replace nested if-else chains with early returns (guard clauses).",
+                "Use a dictionary instead of long if-elif chains.",
+                f"Target: split into at least {vg // 8} smaller functions, each with v(g) ≤ 10."
+            ]
+        })
+    elif vg > 15:
+        fixes.append({
+            "metric": "Cyclomatic Complexity v(g)", "value": f"{vg} paths", "severity": "medium",
+            "problem": "Above the safe threshold of 10. Testing all paths is difficult.",
+            "fix": [
+                "Extract the most complex if-else block into its own function.",
+                "Replace for-loops with embedded conditions using list comprehensions."
+            ]
+        })
+    if evg > 20:
+        fixes.append({
+            "metric": "Essential Complexity ev(g)", "value": f"{evg}", "severity": "high",
+            "problem": f"ev(g)={evg} means fundamentally unstructured code. Cannot be simplified without a full rewrite.",
+            "fix": [
+                "Eliminate all break statements inside nested loops.",
+                "Remove continue statements — restructure loop conditions instead.",
+                "ev(g)=1 is the goal. This module likely needs a complete rewrite."
+            ]
+        })
+    if ivg > 30:
+        fixes.append({
+            "metric": "Design Complexity iv(g)", "value": f"{ivg}", "severity": "high",
+            "problem": f"iv(g)={ivg} means tightly coupled to {ivg} other modules. Changing anything here will break other things.",
+            "fix": [
+                "Apply dependency injection — pass dependencies as parameters.",
+                "Introduce an interface between this module and what it calls.",
+                f"Target: iv(g) ≤ 10. Split into {ivg // 10} loosely coupled modules."
+            ]
+        })
+    if V > 10000:
+        fixes.append({
+            "metric": "Halstead Volume (V)", "value": f"{V}", "severity": "high",
+            "problem": f"Volume={V}. Halstead's theory says anything above 8,000 is almost guaranteed to have bugs.",
+            "fix": [
+                "Reduce unique operators — replace complex expressions with named variables.",
+                "Split the module — high volume almost always means it's doing two jobs."
+            ]
+        })
+    if b > 2:
+        fixes.append({
+            "metric": "Halstead Bug Estimate (b)", "value": f"{b:.2f} bugs", "severity": "high",
+            "problem": f"Halstead's formula estimates {b:.1f} bugs purely from size and complexity.",
+            "fix": [
+                "Write unit tests for every function immediately.",
+                "Run pylint or flake8 on this file before committing.",
+                f"Bug estimate drops below 1 when loc < 200 and v(g) < 10."
+            ]
+        })
+    return fixes
 
-# ── Feature importance chart ──────────────────────────────────────────────
-def show_feature_importance(model, feature_names, top_n=10):
-    """Horizontal bar chart of the top N feature importances."""
-    importances = pd.Series(model.feature_importances_, index=feature_names)
-    top = importances.nlargest(top_n).sort_values()
-
-    fig, ax = plt.subplots(figsize=(6, 3.5))
-    fig.patch.set_alpha(0)
-    ax.set_facecolor("none")
-    bars = ax.barh(top.index, top.values, color="#1976D2", edgecolor="none", height=0.6)
-    ax.set_xlabel("Importance", fontsize=11)
-    ax.set_title(f"Top {top_n} features driving prediction", fontsize=12)
-    ax.tick_params(axis="y", labelsize=10)
-    ax.tick_params(axis="x", labelsize=9)
-    ax.spines[["top", "right"]].set_visible(False)
-    plt.tight_layout()
-    st.pyplot(fig, use_container_width=True)
-    plt.close(fig)
-
-# ── Build the input dict from sliders (fills unused features with median) ─
-def build_input_array(slider_values: dict, feature_names: list) -> np.ndarray:
-    """
-    Map slider values onto the full feature vector.
-    Features not covered by sliders get value 0 (scaler will handle it).
-    """
-    row = {f: 0.0 for f in feature_names}
-    row.update(slider_values)
-    return np.array([[row[f] for f in feature_names]])
-
-
-# ═══════════════════════════════════════════════════════════════════════════
-#  UI LAYOUT
-# ═══════════════════════════════════════════════════════════════════════════
-
+# ══════════════════════════════════════════════════════════
+#  UI
+# ══════════════════════════════════════════════════════════
 st.title("🍝 Spaghetti Code Detector")
-st.caption(
-    "Submit your PR metrics. The Senior Dev will review it. Brace yourself."
-)
+st.caption("Submit your PR metrics. The Senior Dev will review it.")
 st.divider()
 
-# ── Guard: show error if pkl files are missing ────────────────────────────
-if not models_loaded:
-    st.error(
-        f"Could not load model files: `{missing_file}`\n\n"
-        "Make sure `model.pkl`, `lr_model.pkl`, `scaler.pkl`, and "
-        "`feature_names.pkl` are in the same folder as `app.py`.\n\n"
-        "Run the training notebook first to generate these files."
-    )
-    st.stop()
-
-# ── Sidebar: settings ─────────────────────────────────────────────────────
+# ── Sidebar ────────────────────────────────────────────────
 with st.sidebar:
-    st.header("Review Settings")
-
-    chosen_model_name = st.radio(
+    st.header("Settings")
+    model_choice = st.radio(
         "Model",
-        ["Random Forest", "Logistic Regression"],
-        help="Random Forest generally has higher recall for bugs.",
+        ["Voting Ensemble (Best)", "Random Forest",
+         "Gradient Boosting", "Logistic Regression"],
+        help="Voting Ensemble combines all three models for the most reliable prediction"
     )
-    chosen_model = rf_model if chosen_model_name == "Random Forest" else lr_model
-
-    show_importance = st.checkbox("Show feature importance chart", value=True)
-    show_raw        = st.checkbox("Show raw probability value",    value=False)
-    senior_mood     = st.select_slider(
-        "Senior Dev's mood today",
-        options=["Hungover", "On deadline", "Post-lunch", "Just had coffee"],
-        value="On deadline",
-    )
-    mood_prefix = {
-        "Hungover":        "Ugh...",
-        "On deadline":     "I don't have time for this.",
-        "Post-lunch":      "Okay, let's see...",
-        "Just had coffee": "Alright, bring it on.",
-    }[senior_mood]
+    model_map = {
+        "Random Forest"          : rf_model,
+        "Logistic Regression"    : lr_model,
+        "Gradient Boosting"      : gb_model,
+        "Voting Ensemble (Best)" : ensemble_model
+    }
+    active_model = model_map[model_choice]
 
     st.divider()
-    st.caption("NASA JM1 Software Defect Dataset")
-    st.caption(f"Model: {chosen_model_name}")
-    st.caption(f"Features: {len(FEATURE_NAMES)}")
 
-# ── Main: input sliders ───────────────────────────────────────────────────
-st.subheader("Pull Request Metrics")
-st.caption(
-    "Adjust the sliders to match your module's code metrics. "
-    "These are the same metrics the model was trained on."
-)
+    # ── Threshold slider — key fix for Problem 1 ──────────
+    st.subheader("Decision Threshold")
+    threshold = st.slider(
+        "Defect threshold",
+        min_value=0.10, max_value=0.60,
+        value=0.30, step=0.05,
+        help="Lower = more sensitive to defects. "
+             "Default 0.30 is recommended for defect detection "
+             "because missing a bug is worse than a false alarm."
+    )
+    if threshold <= 0.25:
+        st.warning("Very sensitive — many false alarms expected.")
+    elif threshold >= 0.50:
+        st.warning("Standard threshold — may miss real defects.")
+    else:
+        st.success(f"Recommended zone for defect detection.")
 
+    st.divider()
+    st.caption("Dataset: NASA JM1 Software Defect")
+    st.caption("~10,000 C-language modules | ~19% defect rate")
+    st.caption("Hidden features filled with dataset medians")
+
+# ── Step 1: McCabe sliders ─────────────────────────────────
+st.subheader("Step 1 — Code Structure Metrics")
 col1, col2 = st.columns(2)
-
 with col1:
-    st.markdown("**Size & Complexity**")
-    loc  = st.slider("Lines of code (loc)",           10,  5000, 150, step=10)
-    vg   = st.slider("Cyclomatic complexity v(g)",     1,   100,   8)
-    evg  = st.slider("Essential complexity ev(g)",     1,    50,   3)
-    ivg  = st.slider("Design complexity iv(g)",        1,    50,   4)
-
+    loc = st.slider("Lines of code (loc)",          1, 5000, 80)
+    vg  = st.slider("Cyclomatic complexity v(g)",   1, 100,  5)
 with col2:
-    st.markdown("**Halstead Metrics**")
-    n_val = st.slider("Halstead length N",            10, 10000, 400, step=10)
-    v_val = st.slider("Halstead volume V",            10,  5000, 200, step=10)
-    l_val = st.slider("Halstead level L",           0.0,   1.0, 0.1, step=0.01)
-    b_val = st.slider("Halstead bugs estimate b",   0.0,   5.0, 0.1, step=0.01)
+    evg = st.slider("Essential complexity ev(g)",   1, 60,   2)
+    ivg = st.slider("Design complexity iv(g)",      1, 60,   3)
 
+# ── Step 2: Halstead calculator ────────────────────────────
 st.divider()
+st.subheader("Step 2 — Halstead Metrics")
+st.caption("Enter raw counts — values are calculated automatically.")
 
-# ── Predict button ────────────────────────────────────────────────────────
-if st.button("🔍  Submit for Code Review", use_container_width=True, type="primary"):
+with st.expander("What are operators and operands? ↓"):
+    st.markdown("""
+**Operators:** `if`, `for`, `while`, `=`, `+`, `-`, `*`, `/`, `return`, `def`
+**Operands:** variable names, numbers, strings
 
-    slider_values = {
-        "loc":   loc,
-        "v(g)":  vg,
-        "ev(g)": evg,
-        "iv(g)": ivg,
-        "n":     n_val,
-        "v":     v_val,
-        "l":     l_val,
-        "b":     b_val,
+**Quick estimate:**
+- 50-line function → n1≈10, n2≈15, N1≈80, N2≈100
+- 200-line function → n1≈15, n2≈40, N1≈400, N2≈500
+    """)
+
+c3, c4 = st.columns(2)
+with c3:
+    st.markdown("**Distinct counts**")
+    n1 = st.number_input("n1 — distinct operators", 1, 200, 10)
+    n2 = st.number_input("n2 — distinct operands",  1, 500, 15)
+with c4:
+    st.markdown("**Total counts**")
+    N1 = st.number_input("N1 — total operators",    1, 20000, 80)
+    N2 = st.number_input("N2 — total operands",     1, 20000, 100)
+
+N, V, L, b = calculate_halstead(n1, n2, N1, N2)
+hc1, hc2, hc3, hc4 = st.columns(4)
+hc1.metric("N (length)", N)
+hc2.metric("V (volume)", V)
+hc3.metric("L (level)",  L)
+hc4.metric("b (bugs)",   b)
+
+# ── Submit ─────────────────────────────────────────────────
+st.divider()
+if st.button("🔍 Submit for Code Review", use_container_width=True):
+
+    slider_vals = {
+        "loc": loc, "v(g)": vg, "ev(g)": evg, "iv(g)": ivg,
+        "n": N, "b": b
     }
 
-    input_array  = build_input_array(slider_values, FEATURE_NAMES)
-    input_scaled = scaler.transform(input_array)
+    # ── FIX 1: use medians for hidden features ─────────────
+    input_array = build_input(slider_vals)
+    scaled = scaler.transform(input_array)
 
-    prediction   = bool(chosen_model.predict(input_scaled)[0])
-    probability  = float(chosen_model.predict_proba(input_scaled)[0][1])
+    # Raw probability
+    proba = float(active_model.predict_proba(scaled)[0][1])
 
-    # Pick a random message from the response bank
-    import random
-    r        = RESPONSES[prediction]
-    message  = random.choice(r["messages"])
-    full_msg = f"{mood_prefix} {message}"
+    # ── FIX 2: use custom threshold instead of 0.5 ─────────
+    pred = proba >= threshold
 
-    st.subheader(r["headline"])
-    spaghetti_meter(probability)
+    response = RESPONSES[pred]
+    st.divider()
+    st.subheader(response["status"])
 
-    if show_raw:
-        st.caption(f"Raw defect probability: {probability:.4f}")
+    # Show probability with threshold marker
+    st.metric("Defect probability", f"{proba:.1%}",
+              delta=f"Threshold: {threshold:.0%}",
+              delta_color="off")
+    st.progress(proba)
 
-    # Display the Senior Dev's verdict
-    if prediction:
-        st.error(f"**Senior Dev says:** {full_msg}")
+    if proba >= threshold:
+        st.error(f'**Senior Dev says:** "{random.choice(response["lines"])}"')
     else:
-        st.success(f"**Senior Dev says:** {full_msg}")
+        st.success(f'**Senior Dev says:** "{random.choice(response["lines"])}"')
 
-    # Metric summary cards
-    st.divider()
-    m1, m2, m3, m4 = st.columns(4)
-    m1.metric("Lines of code",    loc)
-    m2.metric("Complexity v(g)",  vg)
-    m3.metric("Halstead N",       n_val)
-    m4.metric("Defect prob",      f"{probability:.1%}")
-
-    # Feature importance chart
-    if show_importance and chosen_model_name == "Random Forest":
+    # ── Fixes ──────────────────────────────────────────────
+    fixes = generate_fixes(loc, vg, evg, ivg, N, V, L, b)
+    if fixes:
         st.divider()
-        st.subheader("Why did the model decide this?")
-        show_feature_importance(chosen_model, FEATURE_NAMES)
-        st.caption(
-            "Bar length = how much each metric contributed to the model's "
-            "overall decision across the training data. Higher = more influential."
+        st.subheader("🔧 What is wrong and how to fix it")
+        for fix in fixes:
+            icon = "🔴" if fix["severity"] == "high" else "🟡"
+            with st.expander(
+                f"{icon}  {fix['metric']} = {fix['value']}  "
+                f"({'Critical' if fix['severity'] == 'high' else 'Warning'})"
+            ):
+                if fix["severity"] == "high":
+                    st.error(f"**Problem:** {fix['problem']}")
+                else:
+                    st.warning(f"**Problem:** {fix['problem']}")
+                st.markdown("**How to fix it:**")
+                for i, step in enumerate(fix["fix"], 1):
+                    st.markdown(f"{i}. {step}")
+    elif not pred:
+        st.success("✅ No significant issues. Keep functions small and v(g) under 10.")
+
+    # ── FIX 3: SHAP values instead of global importance ────
+    # This chart CHANGES per prediction — shows why THIS input got THIS verdict
+    if model_choice in ["Random Forest", "Gradient Boosting"]:
+        with st.expander("Why did the model decide THIS? (SHAP) ↓"):
+            st.caption(
+                "SHAP values show the contribution of EACH feature "
+                "to THIS specific prediction. "
+                "Red = pushed toward Defective. Blue = pushed toward Clean. "
+                "This chart changes as you move the sliders."
+            )
+            try:
+                tree_model = rf_model if model_choice == "Random Forest" \
+                             else gb_model
+                explainer  = get_shap_explainer(tree_model)
+                shap_vals  = explainer.shap_values(scaled)
+
+                # For binary classification, shap_values returns [class0, class1]
+                # We want class 1 (defective)
+                if isinstance(shap_vals, list):
+                    sv = shap_vals[1][0]
+                else:
+                    sv = shap_vals[0]
+
+                feature_names = FEATURES
+                shap_df = pd.DataFrame({
+                    "Feature"   : feature_names,
+                    "SHAP value": sv,
+                    "Input value": [
+                        round(build_input(slider_vals)[0][i], 2)
+                        for i in range(len(feature_names))
+                    ]
+                }).sort_values("SHAP value", key=abs, ascending=False).head(12)
+
+                colors = [
+                    "#f44336" if v > 0 else "#2196F3"
+                    for v in shap_df["SHAP value"]
+                ]
+                fig, ax = plt.subplots(figsize=(7, 4))
+                bars = ax.barh(
+                    shap_df["Feature"],
+                    shap_df["SHAP value"],
+                    color=colors,
+                    edgecolor="none"
+                )
+                ax.axvline(0, color="black", linewidth=0.8)
+                ax.set_xlabel("SHAP value  →  Red pushes toward Defective, Blue toward Clean")
+                ax.set_title(
+                    f"Per-prediction explanation  |  Defect prob: {proba:.1%}"
+                )
+                fig.patch.set_alpha(0)
+                ax.patch.set_alpha(0)
+                plt.tight_layout()
+                st.pyplot(fig)
+
+                st.dataframe(
+                    shap_df[["Feature", "Input value", "SHAP value"]].reset_index(drop=True),
+                    use_container_width=True,
+                    hide_index=True
+                )
+            except Exception as e:
+                st.warning(f"SHAP explanation unavailable for this model: {e}")
+
+    # ── Model comparison ───────────────────────────────────
+    with st.expander("Compare all models ↓"):
+        rows = []
+        for name, m in model_map.items():
+            p = float(m.predict_proba(scaled)[0][1])
+            rows.append({
+                "Model"             : name,
+                "Defect probability": f"{p:.1%}",
+                f"Verdict (t={threshold:.2f})": "Defective" if p >= threshold else "Clean"
+            })
+        st.dataframe(
+            pd.DataFrame(rows),
+            hide_index=True,
+            use_container_width=True
         )
-
-    # Advice section
-    st.divider()
-    st.subheader("What to fix")
-    advice_given = False
-    if vg > 20:
-        st.warning(f"**v(g) = {vg}** — Cyclomatic complexity above 20 means too many execution paths. Break this function up.")
-        advice_given = True
-    if evg > 10:
-        st.warning(f"**ev(g) = {evg}** — High essential complexity means the logic can't be simplified further. Redesign the algorithm.")
-        advice_given = True
-    if loc > 500:
-        st.warning(f"**loc = {loc}** — Modules over 500 lines are hard to test and maintain. Extract smaller functions.")
-        advice_given = True
-    if b_val > 1.0:
-        st.warning(f"**b = {b_val:.2f}** — Halstead bug estimate above 1 predicts at least one fault. Review your logic carefully.")
-        advice_given = True
-    if not advice_given:
-        st.info("No specific red flags in the individual metrics. The model is reacting to the combination of values.")
-
-# ── Footer ────────────────────────────────────────────────────────────────
-st.divider()
-st.caption(
-    "Trained on the NASA MDP JM1 software defect dataset · "
-    "McCabe & Halstead metrics · RandomForest + LogisticRegression"
-)
