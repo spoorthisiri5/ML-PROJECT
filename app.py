@@ -373,6 +373,7 @@ if st.button("🔍 Submit for Code Review", use_container_width=True):
             pd.DataFrame(rows),
             hide_index=True,
             use_container_width=True
+        )
 
 
 
