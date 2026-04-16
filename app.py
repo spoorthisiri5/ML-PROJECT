@@ -360,22 +360,7 @@ if st.button("🔍 Submit for Code Review", use_container_width=True):
             except Exception as e:
                 st.warning(f"SHAP explanation unavailable for this model: {e}")
 
-   ''' # ── Model comparison ───────────────────────────────────
-    with st.expander("Compare all models ↓"):
-        rows = []
-        for name, m in model_map.items():
-            p = float(m.predict_proba(scaled)[0][1])
-            rows.append({
-                "Model"             : name,
-                "Defect probability": f"{p:.1%}",
-                f"Verdict (t={threshold:.2f})": "Defective" if p >= threshold else "Clean"
-            })
-        st.dataframe(
-            pd.DataFrame(rows),
-            hide_index=True,
-            use_container_width=True
-        )'''
-# ── Model comparison ───────────────────────────────────
+    # ── Model comparison ───────────────────────────────────
 with st.expander("Compare all models ↓"):
     rows = []
     probs = []   # store numeric values for graph
