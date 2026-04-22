@@ -336,29 +336,29 @@ if model_choice in ["Random Forest", "Gradient Boosting"]:
 
             if isinstance(shap_vals, list):
                 # Old format — take class 1 (Defective), first row
-                sv = shap_vals[1][0]
-
+                sv = shap_vals[1][0].flatten()
+                # After whichever branch sets sv, add this immediately
             elif hasattr(shap_vals, "values"):
                 # Explanation object (newest SHAP)
                 vals = shap_vals.values
                 if vals.ndim == 3:
                     # shape: (n_samples, n_features, n_classes)
-                    sv = vals[0, :, 1]
+                    sv = vals[0, :, 1].flatten()
                 elif vals.ndim == 2:
                     # shape: (n_samples, n_features) — already class 1
-                    sv = vals[0, :]
+                    sv = vals[0, :].flatten()
                 else:
-                    sv = vals[0]
+                    sv = vals[0].flatten()
 
             else:
                 # Numpy array fallback
                 arr = shap_vals
                 if arr.ndim == 3:
-                    sv = arr[0, :, 1]
+                    sv = arr[0, :, 1].flatten()
                 elif arr.ndim == 2:
-                    sv = arr[0, :]
+                    sv = arr[0, :].flatten()
                 else:
-                    sv = arr[0]
+                    sv = arr[0].flatten()
 
             # ── Build readable dataframe ──────────────────────────
             input_values = input_array[0].tolist()
