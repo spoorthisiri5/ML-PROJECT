@@ -301,7 +301,7 @@ if st.button("🔍 Submit for Code Review", use_container_width=True):
     # ── FIX 3: SHAP values instead of global importance ────
     # This chart CHANGES per prediction — shows why THIS input got THIS verdict
         # ── Feature importance chart ───────────────────────────
-    if model_choice == "Random Forest":
+    if model_choice == ["Random Forest","Gradient Boosting","Logistic Regression","Voting Ensemble (Best)"]:
         with st.expander("Why did the model decide this? ↓"):
             importances = pd.Series(
                 rf_model.feature_importances_,
