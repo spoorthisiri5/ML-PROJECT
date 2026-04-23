@@ -300,185 +300,30 @@ if st.button("🔍 Submit for Code Review", use_container_width=True):
 
     # ── FIX 3: SHAP values instead of global importance ────
     # This chart CHANGES per prediction — shows why THIS input got THIS verdict
-    if model_choice in ["Random Forest", "Gradient Boosting"]:
-        with st.expander("🔍 Why did the model decide THIS? (SHAP) ↓"):
-            st.caption(
-                "Red bars pushed this prediction toward Defective. "
-                "Blue bars pushed it toward Clean. "
-                "This chart changes every time you move a slider."
+        # ── Feature importance chart ───────────────────────────
+    if model_choice == "Random Forest":
+        with st.expander("Why did the model decide this? ↓"):
+            importances = pd.Series(
+                rf_model.feature_importances_,
+                index=FEATURES
+            ).sort_values(ascending=True).tail(10)
+
+            colors = [
+                "#f44336" if f in slider_vals else "#90A4AE"
+                for f in importances.index
+            ]
+            fig, ax = plt.subplots(figsize=(6, 3.5))
+            ax.barh(
+                importances.index,
+                importances.values,
+                color=colors,
+                edgecolor="none"
             )
-            try:
-               import shap
-               import numpy as np
-
-                tree_model = rf_model if model_choice == "Random Forest" \
-                            else gb_model
-
-                if tree_model is None:
-                    st.warning("This model is not loaded. Check your .pkl files.")
-                else:
-                    # ── Build explainer ────────────────────────────────
-                    explainer = shap.TreeExplainer(tree_model)
-                    shap_vals = explainer.shap_values(scaled)
-
-                    # ── Extract 1D array for class 1 (Defective) ──────
-                    # Handles every SHAP version output format
-                    if isinstance(shap_vals, list):
-                     # Old SHAP (<0.40) — list of [class0, class1]
-                        sv = np.array(shap_vals[1]).flatten()
-
-                    elif hasattr(shap_vals, "values"):
-                        # Newest SHAP — Explanation object
-                        v = shap_vals.values
-                        if v.ndim == 3:
-                            # (n_samples, n_features, n_classes)
-                            sv = np.array(v[0, :, 1]).flatten()
-                        elif v.ndim == 2:
-                            # (n_samples, n_features)
-                            sv = np.array(v[0, :]).flatten()
-                        else:
-                            sv = np.array(v).flatten()
-
-                    else:
-                        # Plain numpy array fallback
-                        arr = np.array(shap_vals)
-                        if arr.ndim == 3:
-                            sv = arr[0, :, 1].flatten()
-                        elif arr.ndim == 2:
-                            sv = arr[0, :].flatten()
-                        else:
-                            sv = arr.flatten()
-
-                    # ── Verify shape ───────────────────────────────────
-                    n_features = len(FEATURES)
-                    if len(sv) != n_features:
-                        st.error(
-							f"Shape mismatch: SHAP returned {len(sv)} values "
-							f"but model has {n_features} features. "
-                            f"Raw shap_vals type: {type(shap_vals)}, "
-                            f"sv shape before flatten: check logs."
-                        )
-                        st.stop()
-
-                    # ── Build input values (also guaranteed 1D) ────────
-                    input_vals = np.array(input_array).flatten()
-                    if len(input_vals) != n_features:
-                        input_vals = np.array(
-                            [build_input(slider_vals)[0][i]
-                            for i in range(n_features)]
-                        ).flatten()
-
-                    # ── Build DataFrame using .tolist() — safest method─
-                    shap_df = pd.DataFrame({
-                        "Feature"    : list(FEATURES),
-                        "Input value": input_vals.tolist(),
-                        "SHAP value" : sv.tolist(),
-                    })
-
-                    shap_df["abs_shap"] = shap_df["SHAP value"].abs()
-                    shap_df = (
-                        shap_df
-                        .sort_values("abs_shap", ascending=False)
-                        .head(12)
-                        .reset_index(drop=True)
-                    )
-
-                    # ── Guard against all-zero SHAP values ────────────
-                    if shap_df["abs_shap"].sum() < 1e-10:
-                        st.warning(
-                            "SHAP values are all near zero for this input. "
-                            "Try using more extreme slider values."
-                        )
-                    else:
-                        # ── Plot ───────────────────────────────────────
-                        colors = [
-                            "#f44336" if v > 0 else "#2196F3"
-                            for v in shap_df["SHAP value"]
-                        ]
-
-                        fig, ax = plt.subplots(figsize=(7, 4))
-
-                        ax.barh(
-                            shap_df["Feature"],
-                            shap_df["SHAP value"],
-                            color=colors,
-                            edgecolor="none"
-                        )
-
-                        ax.axvline(0, color="gray", linewidth=0.8, linestyle="--")
-
-                        # Value labels on each bar
-                        for i, (val, feat) in enumerate(
-                            zip(shap_df["SHAP value"], shap_df["Feature"])
-                        ):
-                            ax.text(
-                                val + (0.001 if val >= 0 else -0.001),
-                                i,
-                                f"{val:+.3f}",
-                                va="center",
-                                ha="left" if val >= 0 else "right",
-                                fontsize=8,
-                                color="#f44336" if val > 0 else "#2196F3"
-                            )
-
-		                    ax.set_xlabel(
-		                        "← Pushes toward Clean          "
-		                        "Pushes toward Defective →",
-		                        color="gray", fontsize=9
-		                    )
-		                    ax.set_title(
-		                        f"SHAP — why this input got {proba:.1%} defect probability",
-		                        color="gray", fontsize=11, pad=10
-		                    )
-		
-		                    # Transparent background to match Streamlit theme
-		                    fig.patch.set_facecolor("none")
-		                    ax.set_facecolor("none")
-		                    ax.tick_params(colors="gray")
-		                    for spine in ax.spines.values():
-		                        spine.set_edgecolor("#444444")
-		
-		                    plt.tight_layout()
-		                    st.pyplot(fig)
-		                    plt.close(fig)   # prevents memory leak
-		
-		                    # ── Table ──────────────────────────────────────
-		                    display_df = shap_df[
-		                        ["Feature", "Input value", "SHAP value"]
-		                    ].copy()
-		                    display_df["Input value"] = display_df["Input value"].round(2)
-		                    display_df["SHAP value"]  = display_df["SHAP value"].round(4)
-		                    display_df["Direction"]   = display_df["SHAP value"].apply(
-		                        lambda x: "→ Defective" if x > 0 else "→ Clean"
-		                    )
-		
-		                    st.dataframe(
-		                        display_df,
-		                        use_container_width=True,
-		                        hide_index=True
-		                    )
-		
-		                    # ── Plain English summary ──────────────────────
-		                    top     = shap_df.iloc[0]
-		                    top_dir = "Defective" if top["SHAP value"] > 0 \
-		                              else "Clean"
-		                    st.info(
-		                        f"**Strongest driver:** `{top['Feature']}` = "
-		                        f"`{round(top['Input value'], 2)}` "
-		                        f"pushed this prediction toward **{top_dir}** "
-		                        f"(SHAP = `{top['SHAP value']:+.4f}`)"
-		                    )
-		
-		        except Exception as e:
-		            import traceback
-		            st.error(f"SHAP failed: {e}")
-		            st.code(traceback.format_exc())
-		            st.caption(
-		                "Most common fixes: "
-		                "1) Add `shap` to requirements.txt and reboot the app on Streamlit Cloud. "
-		                "2) Make sure gb_model.pkl is uploaded to GitHub if using Gradient Boosting."
-		            )
-
+            ax.set_xlabel("Importance score")
+            ax.set_title("Top 10 features  (red = your input)")
+            fig.patch.set_alpha(0)
+            ax.patch.set_alpha(0)
+            st.pyplot(fig)
     # ── Model comparison ───────────────────────────────────
     with st.expander("Compare all models ↓"):
         rows = []
