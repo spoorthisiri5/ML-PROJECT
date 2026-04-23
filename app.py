@@ -300,66 +300,137 @@ if st.button("🔍 Submit for Code Review", use_container_width=True):
 
     # ── FIX 3: SHAP values instead of global importance ────
     # This chart CHANGES per prediction — shows why THIS input got THIS verdict
-    if model_choice in ["Random Forest", "Gradient Boosting"]:
-        with st.expander("Why did the model decide THIS? (SHAP) ↓"):
-            st.caption(
-                "SHAP values show the contribution of EACH feature "
-                "to THIS specific prediction. "
-                "Red = pushed toward Defective. Blue = pushed toward Clean. "
-                "This chart changes as you move the sliders."
-            )
-            try:
-                tree_model = rf_model if model_choice == "Random Forest" \
-                             else gb_model
-                explainer  = get_shap_explainer(tree_model)
-                shap_vals  = explainer.shap_values(scaled)
+if model_choice in ["Random Forest", "Gradient Boosting"]:
+    with st.expander("🔍 Why did the model decide THIS? (SHAP) ↓"):
+        st.caption(
+            "Red bars pushed this prediction toward Defective. "
+            "Blue bars pushed it toward Clean. "
+            "This chart changes every time you move a slider."
+        )
+        try:
+            import shap
+            import matplotlib.pyplot as plt
+            import pandas as pd
+            import numpy as np
 
-                # For binary classification, shap_values returns [class0, class1]
-                # We want class 1 (defective)
-                if isinstance(shap_vals, list):
-                    sv = shap_vals[1][0]
+            tree_model = rf_model if model_choice == "Random Forest" \
+                         else gb_model
+
+            # Build explainer
+            explainer = shap.TreeExplainer(tree_model)
+            shap_vals = explainer.shap_values(scaled)
+
+            # ── Extract the class-1 (Defective) SHAP values ───────
+            # Then immediately flatten to guarantee 1D shape
+            # This fixes: "Per-column arrays must each be 1-dimensional"
+
+            if isinstance(shap_vals, list):
+                # Old SHAP (<0.40): [class0_array, class1_array]
+                sv = np.array(shap_vals[1][0]).flatten()
+
+            elif hasattr(shap_vals, "values"):
+                # Newest SHAP: Explanation object
+                vals = shap_vals.values
+                if vals.ndim == 3:
+                    # (n_samples, n_features, n_classes)
+                    sv = vals[0, :, 1].flatten()
+                elif vals.ndim == 2:
+                    # (n_samples, n_features)
+                    sv = vals[0, :].flatten()
                 else:
-                    sv = shap_vals[0]
+                    sv = np.array(vals).flatten()
 
-                feature_names = FEATURES
-                shap_df = pd.DataFrame({
-                    "Feature"   : feature_names,
-                    "SHAP value": sv,
-                    "Input value": [
-                        round(build_input(slider_vals)[0][i], 2)
-                        for i in range(len(feature_names))
-                    ]
-                }).sort_values("SHAP value", key=abs, ascending=False).head(12)
+            else:
+                # Plain numpy array
+                arr = np.array(shap_vals)
+                if arr.ndim == 3:
+                    sv = arr[0, :, 1].flatten()
+                elif arr.ndim == 2:
+                    sv = arr[0, :].flatten()
+                else:
+                    sv = arr.flatten()
 
-                colors = [
-                    "#f44336" if v > 0 else "#2196F3"
-                    for v in shap_df["SHAP value"]
-                ]
-                fig, ax = plt.subplots(figsize=(7, 4))
-                bars = ax.barh(
-                    shap_df["Feature"],
-                    shap_df["SHAP value"],
-                    color=colors,
-                    edgecolor="none"
+            # ── Safety check before building DataFrame ─────────────
+            n_features = len(FEATURES)
+            if len(sv) != n_features:
+                st.error(
+                    f"SHAP returned {len(sv)} values but model has "
+                    f"{n_features} features. Shape mismatch."
                 )
-                ax.axvline(0, color="black", linewidth=0.8)
-                ax.set_xlabel("SHAP value  →  Red pushes toward Defective, Blue toward Clean")
-                ax.set_title(
-                    f"Per-prediction explanation  |  Defect prob: {proba:.1%}"
-                )
-                fig.patch.set_alpha(0)
-                ax.patch.set_alpha(0)
-                plt.tight_layout()
-                st.pyplot(fig)
+                st.stop()
 
-                st.dataframe(
-                    shap_df[["Feature", "Input value", "SHAP value"]].reset_index(drop=True),
-                    use_container_width=True,
-                    hide_index=True
-                )
-            except Exception as e:
-                st.warning(f"SHAP explanation unavailable for this model: {e}")
+            # ── Build DataFrame — both arrays are now guaranteed 1D ─
+            input_vals = np.array(input_array[0]).flatten()
 
+            shap_df = pd.DataFrame({
+                "Feature"    : FEATURES,            # list — 1D ✓
+                "Your input" : input_vals.tolist(),  # list — 1D ✓
+                "SHAP value" : sv.tolist(),          # list — 1D ✓
+            })
+
+            shap_df["abs_shap"] = shap_df["SHAP value"].abs()
+            shap_df = (
+                shap_df
+                .sort_values("abs_shap", ascending=False)
+                .head(12)
+                .reset_index(drop=True)
+            )
+
+            # ── Plot ───────────────────────────────────────────────
+            colors = [
+                "#f44336" if v > 0 else "#2196F3"
+                for v in shap_df["SHAP value"]
+            ]
+
+            fig, ax = plt.subplots(figsize=(7, 4))
+            ax.barh(
+                shap_df["Feature"],
+                shap_df["SHAP value"],
+                color=colors,
+                edgecolor="none"
+            )
+            ax.axvline(0, color="gray", linewidth=0.8, linestyle="--")
+            ax.set_xlabel(
+                "← Pushes toward Clean          "
+                "Pushes toward Defective →"
+            )
+            ax.set_title(
+                f"SHAP — why this input got {proba:.1%} defect probability"
+            )
+            fig.patch.set_facecolor("none")
+            ax.set_facecolor("none")
+            ax.tick_params(colors="gray")
+            ax.xaxis.label.set_color("gray")
+            ax.title.set_color("gray")
+            for spine in ax.spines.values():
+                spine.set_edgecolor("gray")
+
+            plt.tight_layout()
+            st.pyplot(fig)
+            plt.close(fig)
+
+            # ── Table ──────────────────────────────────────────────
+            display_df = shap_df[["Feature", "Your input", "SHAP value"]].copy()
+            display_df["SHAP value"] = display_df["SHAP value"].round(4)
+            display_df["Direction"]  = display_df["SHAP value"].apply(
+                lambda x: "→ Defective" if x > 0 else "→ Clean"
+            )
+            st.dataframe(display_df, use_container_width=True, hide_index=True)
+
+            # ── Plain English summary ──────────────────────────────
+            top     = shap_df.iloc[0]
+            top_dir = "Defective" if top["SHAP value"] > 0 else "Clean"
+            st.info(
+                f"**Strongest driver:** `{top['Feature']}` = "
+                f"`{round(top['Your input'], 2)}` "
+                f"pushed this prediction toward **{top_dir}** "
+                f"(SHAP = `{top['SHAP value']:+.4f}`)"
+            )
+
+        except Exception as e:
+            import traceback
+            st.error(f"SHAP failed: {e}")
+            st.code(traceback.format_exc())
     # ── Model comparison ───────────────────────────────────
     with st.expander("Compare all models ↓"):
         rows = []
