@@ -432,17 +432,125 @@ if model_choice in ["Random Forest", "Gradient Boosting"]:
             st.error(f"SHAP failed: {e}")
             st.code(traceback.format_exc())
     # ── Model comparison ───────────────────────────────────
-    with st.expander("Compare all models ↓"):
-        rows = []
-        for name, m in model_map.items():
-            p = float(m.predict_proba(scaled)[0][1])
+with st.expander("Compare all models ↓"):
+    rows = []
+    chart_data = []
+
+    available_models = {
+        "Random Forest"       : rf_model,
+        "Logistic Regression" : lr_model,
+        "Gradient Boosting"   : gb_model,
+        "Voting Ensemble"     : ensemble_model,
+    }
+
+    for name, m in available_models.items():
+        if m is None:
             rows.append({
-                "Model"             : name,
-                "Defect probability": f"{p:.1%}",
-                f"Verdict (t={threshold:.2f})": "Defective" if p >= threshold else "Clean"
+                "Model"              : name,
+                "Defect probability" : "—",
+                "Verdict"            : "Not loaded",
+                "Status"             : "⚠ Missing .pkl"
             })
-        st.dataframe(
-            pd.DataFrame(rows),
-            hide_index=True,
-            use_container_width=True
+            continue
+        try:
+            p = float(m.predict_proba(scaled)[0][1])
+            verdict = "Defective" if p >= threshold else "Clean"
+            rows.append({
+                "Model"              : name,
+                "Defect probability" : f"{p:.1%}",
+                "Verdict"            : verdict,
+                "Status"             : "✓ OK"
+            })
+            chart_data.append({
+                "Model"       : name,
+                "Probability" : round(p * 100, 1),
+                "Verdict"     : verdict
+            })
+        except Exception as e:
+            rows.append({
+                "Model"              : name,
+                "Defect probability" : "Error",
+                "Verdict"            : "Failed",
+                "Status"             : f"⚠ {str(e)[:60]}"
+            })
+
+    # ── Chart ──────────────────────────────────────────────────
+    if chart_data:
+        import matplotlib.pyplot as plt
+        import numpy as np
+
+        names  = [d["Model"]       for d in chart_data]
+        probs  = [d["Probability"] for d in chart_data]
+        verdicts = [d["Verdict"]   for d in chart_data]
+
+        # Color each bar by verdict
+        bar_colors = [
+            "#f44336" if v == "Defective" else "#4CAF50"
+            for v in verdicts
+        ]
+
+        fig, ax = plt.subplots(figsize=(7, 3.2))
+
+        bars = ax.barh(names, probs, color=bar_colors,
+                       edgecolor="none", height=0.5)
+
+        # Threshold line
+        ax.axvline(
+            threshold * 100,
+            color="#FF9800", linewidth=1.5,
+            linestyle="--", label=f"Threshold ({threshold:.0%})"
+        )
+
+        # Value labels on each bar
+        for bar, prob, verdict in zip(bars, probs, verdicts):
+            label_x = bar.get_width() + 1.0
+            ax.text(
+                label_x,
+                bar.get_y() + bar.get_height() / 2,
+                f"{prob:.1f}%  {verdict}",
+                va="center", ha="left",
+                fontsize=10,
+                color="#f44336" if verdict == "Defective" else "#4CAF50",
+                fontweight="bold"
+            )
+
+        # Styling
+        ax.set_xlim(0, 115)
+        ax.set_xlabel("Defect probability (%)", color="gray", fontsize=10)
+        ax.set_title("Model comparison — defect probability",
+                     color="gray", fontsize=11, pad=10)
+        ax.tick_params(colors="gray")
+        ax.xaxis.label.set_color("gray")
+        for spine in ax.spines.values():
+            spine.set_edgecolor("#333333")
+        ax.set_facecolor("none")
+        fig.patch.set_facecolor("none")
+        ax.legend(
+            fontsize=9,
+            labelcolor="gray",
+            facecolor="none",
+            edgecolor="#333333"
+        )
+
+        # Shade the defective zone
+        ax.axvspan(
+            threshold * 100, 115,
+            alpha=0.06, color="#f44336"
+        )
+        ax.text(
+            threshold * 100 + 1, -0.55,
+            "Defective zone →",
+            fontsize=8, color="#f44336", alpha=0.7
+        )
+
+        plt.tight_layout()
+        st.pyplot(fig)
+        plt.close(fig)
+
+    # ── Table ──────────────────────────────────────────────────
+    st.dataframe(
+        pd.DataFrame(rows),
+        hide_index=True,
+        use_container_width=True
+    )
         )
