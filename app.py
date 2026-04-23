@@ -435,7 +435,7 @@ if model_choice in ["Random Forest", "Gradient Boosting"]:
             st.error(f"SHAP failed: {e}")
             st.code(traceback.format_exc())    
     # ── Model comparison ───────────────────────────────────
-    with st.expander("Compare all models ↓"):
+  with st.expander("Compare all models ↓"):
     rows = []
     chart_data = []
 
