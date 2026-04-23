@@ -553,4 +553,4 @@ with st.expander("Compare all models ↓"):
         hide_index=True,
         use_container_width=True
     )
-        )
+    
